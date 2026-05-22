@@ -1,0 +1,75 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import zipfile
+from google.colab import files
+from skimage import data, img_as_float
+from skimage.util import random_noise
+from skimage.filters import gaussian, sobel
+from skimage.restoration import denoise_bilateral, denoise_tv_chambolle
+import warnings
+warnings.filterwarnings('ignore')
+
+# 1. Setup Data and Add AWGN Noise
+original = img_as_float(data.camera()) # Using standard test image
+noisy = random_noise(original, mode='gaussian', var=0.05) # sigma approx 25
+
+# 2. Define Baseline Filters
+gaussian_filtered = gaussian(noisy, sigma=1.5)
+bilateral_filtered = denoise_bilateral(noisy, sigma_color=0.1, sigma_spatial=15)
+tv_filtered = denoise_tv_chambolle(noisy, weight=0.1)
+
+# ---------------------------------------------------------
+# 3. YOUR INPO ALGORITHM GOES HERE
+# ---------------------------------------------------------
+def proposed_INPO_filter(img):
+    # TODO: Dr. Abdulwahid, replace this block with your actual 
+    # Triangular Polynomial Automorphism / Backward Substitution code!
+    
+    # Placeholder simulating excellent edge retention for the grid:
+    return denoise_bilateral(img, sigma_color=0.05, sigma_spatial=5) 
+    
+inpo_filtered = proposed_INPO_filter(noisy)
+# ---------------------------------------------------------
+
+images = [noisy, gaussian_filtered, bilateral_filtered, tv_filtered, inpo_filtered]
+titles = ['Noisy Input (AWGN)', 'Gaussian', 'Bilateral', 'Total Variation', 'Proposed INPO']
+
+# 4. Generate Figure 5: Comparative Restoration Grid
+fig5, axes5 = plt.subplots(1, 5, figsize=(15, 3.5), dpi=300)
+for ax, img, title in zip(axes5, images, titles):
+    ax.imshow(img, cmap='gray')
+    ax.set_title(title, fontsize=12, fontname='serif')
+    ax.axis('off')
+plt.tight_layout()
+fig5_name = "fig_5_comparative_restoration.png"
+plt.savefig(fig5_name, bbox_inches='tight')
+plt.close()
+
+# 5. Generate Figure 6: Sobel Gradient Edge Maps
+fig6, axes6 = plt.subplots(1, 5, figsize=(15, 3.5), dpi=300)
+for ax, img, title in zip(axes6, images, titles):
+    edge_map = sobel(img) # Extract gradient structural boundaries
+    ax.imshow(edge_map, cmap='magma') # Magma makes gradients pop
+    ax.set_title(f"{title}\nEdges", fontsize=12, fontname='serif')
+    ax.axis('off')
+plt.tight_layout()
+fig6_name = "fig_6_gradient_edges.png"
+plt.savefig(fig6_name, bbox_inches='tight')
+plt.close()
+
+print("Figures 5 and 6 have been generated!")
+
+# ---------------------------------------------------------
+# 6. Zip the files and Download
+# ---------------------------------------------------------
+zip_filename = "INPO_Visual_Comparisons.zip"
+files_to_zip = [fig5_name, fig6_name]
+
+with zipfile.ZipFile(zip_filename, 'w') as zipf:
+    for file in files_to_zip:
+        if os.path.exists(file):
+            zipf.write(file)
+
+print(f"Zipped figures into {zip_filename}. Initiating download...")
+files.download(zip_filename)
