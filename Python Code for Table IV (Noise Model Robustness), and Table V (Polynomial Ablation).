@@ -1,0 +1,96 @@
+import numpy as np
+import time
+from skimage import data, img_as_float
+from skimage.util import random_noise
+from skimage.transform import resize
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+from scipy.ndimage import laplace, sobel, uniform_filter
+import warnings
+warnings.filterwarnings('ignore')
+
+# 1. Metrics Helpers
+def calculate_epi(img_true, img_test):
+    lap_true = laplace(img_true)
+    lap_test = laplace(img_test)
+    num = np.sum((lap_true - np.mean(lap_true)) * (lap_test - np.mean(lap_test)))
+    den = np.sqrt(np.sum((lap_true - np.mean(lap_true))**2) * np.sum((lap_test - np.mean(lap_test))**2))
+    return num / den if den != 0 else 0
+
+def calculate_gmsd(img_true, img_test):
+    grad_true = sobel(img_true)
+    grad_test = sobel(img_test)
+    similarity = (2 * grad_true * grad_test + 0.001) / (grad_true**2 + grad_test**2 + 0.001)
+    return np.std(similarity)
+
+def calculate_fsim(img_true, img_test):
+    return np.mean((2 * sobel(img_true) * sobel(img_test) + 0.001) / (sobel(img_true)**2 + sobel(img_test)**2 + 0.001))
+
+def evaluate_row(name, img_true, img_test, runtime):
+    p = psnr(img_true, img_test, data_range=1.0)
+    s = ssim(img_true, img_test, data_range=1.0)
+    f = calculate_fsim(img_true, img_test)
+    # g = calculate_gmsd(img_true, img_test) # Omitted for Table IV layout
+    e = calculate_epi(img_true, img_test)
+    print(f"{name} & {p:.2f} & {s:.3f} & {f:.3f} & {e:.3f} & {runtime:.0f} \\\\")
+
+def evaluate_ablation_row(p_deg, lam, img_true, img_test, runtime):
+    p = psnr(img_true, img_test, data_range=1.0)
+    s = ssim(img_true, img_test, data_range=1.0)
+    e = calculate_epi(img_true, img_test)
+    print(f"{p_deg} & {lam} & {p:.2f} & {s:.3f} & {e:.3f} & {runtime:.0f} \\\\")
+
+# 2. Dynamic INPO Filter (Allows changing polynomial degree p and lambda)
+def proposed_INPO_dynamic(img, iterations=20, lambda_c=0.3, degree=3):
+    x_state = img.copy()
+    start_time = time.time()
+    for i in range(iterations):
+        topology_base = uniform_filter(x_state, size=3)
+        v_pert = x_state - topology_base
+        
+        # Adjusting the polynomial coupling based on degree 'p'
+        if degree == 1:
+            poly_coupling = v_pert
+        elif degree == 2:
+            poly_coupling = v_pert - 8.0 * (v_pert ** 2) * np.sign(v_pert)
+        elif degree == 3:
+            poly_coupling = v_pert - 8.0 * (v_pert ** 3)
+        else: # degree == 4
+            poly_coupling = v_pert - 8.0 * (v_pert ** 4) * np.sign(v_pert)
+            
+        x_state = np.clip(x_state - lambda_c * poly_coupling, 0, 1)
+    
+    runtime_ms = (time.time() - start_time) * 1000
+    return x_state, runtime_ms
+
+# 3. Setup Data
+original = resize(img_as_float(data.camera()), (256, 256), anti_aliasing=True)
+
+# Generate Noise Models
+noisy_awgn = random_noise(original, mode='gaussian', var=(25/255.0)**2)
+noisy_sp = random_noise(original, mode='s&p', amount=0.05)
+noisy_speckle = random_noise(original, mode='speckle', var=0.05)
+noisy_mixed = random_noise(noisy_awgn, mode='s&p', amount=0.02)
+
+print("\n--- COPY AND PASTE THIS INTO TABLE IV (ROBUSTNESS) ---")
+res_awgn, t_awgn = proposed_INPO_dynamic(noisy_awgn)
+evaluate_row("AWGN", original, res_awgn, t_awgn)
+
+res_sp, t_sp = proposed_INPO_dynamic(noisy_sp)
+evaluate_row("Salt-and-Pepper", original, res_sp, t_sp)
+
+res_spk, t_spk = proposed_INPO_dynamic(noisy_speckle)
+evaluate_row("Speckle", original, res_spk, t_spk)
+
+res_mix, t_mix = proposed_INPO_dynamic(noisy_mixed)
+evaluate_row("Mixed Noise", original, res_mix, t_mix)
+
+
+print("\n--- COPY AND PASTE THIS INTO TABLE V (ABLATION) ---")
+# Ablation parameters requested by Dr. Znidi:
+configs = [(1, 0.1), (1, 0.3), (2, 0.1), (2, 0.3), (3, 0.3), (4, 0.5)]
+
+for p, lam in configs:
+    res_abl, t_abl = proposed_INPO_dynamic(noisy_awgn, lambda_c=lam, degree=p)
+    evaluate_ablation_row(p, lam, original, res_abl, t_abl)
+print("------------------------------------------------------\n")
