@@ -1,0 +1,115 @@
+import time
+import numpy as np
+from skimage import data, img_as_float
+from skimage.util import random_noise
+from skimage.filters import gaussian
+from skimage.restoration import denoise_bilateral, denoise_tv_chambolle, denoise_nl_means, denoise_wavelet
+from skimage.transform import resize
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+from scipy.ndimage import laplace, sobel, uniform_filter
+import warnings
+warnings.filterwarnings('ignore')
+
+# ==========================================
+# 1. Metrics Helpers
+# ==========================================
+def calculate_epi(img_true, img_test):
+    lap_true = laplace(img_true)
+    lap_test = laplace(img_test)
+    num = np.sum((lap_true - np.mean(lap_true)) * (lap_test - np.mean(lap_test)))
+    den = np.sqrt(np.sum((lap_true - np.mean(lap_true))**2) * np.sum((lap_test - np.mean(lap_test))**2))
+    return num / den if den != 0 else 0
+
+def calculate_gmsd(img_true, img_test):
+    grad_true = sobel(img_true)
+    grad_test = sobel(img_test)
+    similarity = (2 * grad_true * grad_test + 0.001) / (grad_true**2 + grad_test**2 + 0.001)
+    return np.std(similarity)
+
+def calculate_fsim(img_true, img_test):
+    return np.mean((2 * sobel(img_true) * sobel(img_test) + 0.001) / (sobel(img_true)**2 + sobel(img_test)**2 + 0.001))
+
+def evaluate_method(name, img_true, img_test, runtime):
+    p = psnr(img_true, img_test, data_range=1.0)
+    s = ssim(img_true, img_test, data_range=1.0)
+    f = calculate_fsim(img_true, img_test)
+    g = calculate_gmsd(img_true, img_test)
+    e = calculate_epi(img_true, img_test)
+    print(f"{name} & {p:.2f} & {s:.3f} & {f:.3f} & {g:.3f} & {e:.3f} & {runtime:.0f} \\\\")
+
+# ==========================================
+# 2. Custom Filter Definitions
+# ==========================================
+def perona_malik_filter(img, iters=20, kappa=0.15, gamma=0.15):
+    res = img.copy()
+    for _ in range(iters):
+        dx = np.roll(res, -1, axis=1) - res
+        dy = np.roll(res, -1, axis=0) - res
+        c_x = np.exp(-(dx/kappa)**2)
+        c_y = np.exp(-(dy/kappa)**2)
+        res = res + gamma * (c_x*dx - np.roll(c_x*dx, 1, axis=1) + c_y*dy - np.roll(c_y*dy, 1, axis=0))
+    return res
+
+def proposed_INPO_filter(img, iterations=20, lambda_c=0.2):
+    x_state = img.copy()
+    for i in range(iterations):
+        topology_base = uniform_filter(x_state, size=3)
+        v_pert = x_state - topology_base
+        poly_coupling = v_pert - 8.0 * (v_pert ** 3)
+        x_state = np.clip(x_state - lambda_c * poly_coupling, 0, 1)
+    return x_state
+
+# ==========================================
+# 3. Setup Image and Noise
+# ==========================================
+print("1. Loading Image and adding AWGN...")
+original = resize(img_as_float(data.camera()), (256, 256), anti_aliasing=True)
+noisy = random_noise(original, mode='gaussian', var=(25/255.0)**2) 
+
+# ==========================================
+# 4. Run Filters with Real Time Tracking
+# ==========================================
+print("2. Running all filters and calculating exact runtimes...")
+
+t0 = time.time()
+gaussian_filtered = gaussian(noisy, sigma=1.5)
+t_gauss = (time.time() - t0) * 1000
+
+t0 = time.time()
+bilateral_filtered = denoise_bilateral(noisy, sigma_color=0.1, sigma_spatial=15)
+t_bilat = (time.time() - t0) * 1000
+
+t0 = time.time()
+pm_filtered = perona_malik_filter(noisy, iters=20)
+t_pm = (time.time() - t0) * 1000
+
+t0 = time.time()
+tv_filtered = denoise_tv_chambolle(noisy, weight=0.15)
+t_tv = (time.time() - t0) * 1000
+
+t0 = time.time()
+wavelet_filtered = denoise_wavelet(noisy, method='BayesShrink', mode='soft', rescale_sigma=True)
+t_wav = (time.time() - t0) * 1000
+
+t0 = time.time()
+nlm_filtered = denoise_nl_means(noisy, h=1.15 * 25/255.0, fast_mode=True, patch_size=5, patch_distance=6)
+t_nlm = (time.time() - t0) * 1000
+
+t0 = time.time()
+inpo_filtered = proposed_INPO_filter(noisy, iterations=20, lambda_c=0.2)
+t_inpo = (time.time() - t0) * 1000
+
+# ==========================================
+# 5. Output LaTeX Table Rows
+# ==========================================
+print("\n--- COPY AND PASTE THIS INTO TABLE II ---\n")
+evaluate_method("Noisy Input", original, noisy, 0)
+evaluate_method("Gaussian Filtering", original, gaussian_filtered, t_gauss)
+evaluate_method("Bilateral Filtering", original, bilateral_filtered, t_bilat)
+evaluate_method("Perona--Malik Diffusion", original, pm_filtered, t_pm)
+evaluate_method("TV Denoising", original, tv_filtered, t_tv)
+evaluate_method("Wavelet Thresholding", original, wavelet_filtered, t_wav)
+evaluate_method("Non-Local Means", original, nlm_filtered, t_nlm)
+evaluate_method("\\textbf{Proposed INPO Evolution}", original, inpo_filtered, t_inpo) 
+print("\n-----------------------------------------")
