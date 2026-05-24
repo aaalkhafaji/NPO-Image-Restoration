@@ -1,0 +1,99 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from google.colab import files
+
+# Image processing libraries
+from skimage import data, img_as_float
+from skimage.util import random_noise
+from skimage.filters import gaussian
+from skimage.restoration import denoise_bilateral, denoise_tv_chambolle, denoise_nl_means
+from skimage.transform import resize
+import warnings
+warnings.filterwarnings('ignore')
+
+print("1. Loading image and applying filters...")
+# ==========================================
+# 1. Setup Data and Add AWGN Noise
+# ==========================================
+original = resize(img_as_float(data.camera()), (256, 256), anti_aliasing=True)
+noisy = random_noise(original, mode='gaussian', var=(25/255.0)**2) 
+
+# ==========================================
+# 2. Run Baseline Filters
+# ==========================================
+gaussian_filtered = gaussian(noisy, sigma=1.5)
+bilateral_filtered = denoise_bilateral(noisy, sigma_color=0.1, sigma_spatial=15)
+tv_filtered = denoise_tv_chambolle(noisy, weight=0.15)
+nlm_filtered = denoise_nl_means(noisy, h=1.15 * 25/255.0, fast_mode=True, patch_size=5, patch_distance=6)
+
+# ==========================================
+# 3. PROPOSED INPO ALGORITHM 
+# ==========================================
+def proposed_INPO_filter(img, iterations=5):
+    v_1 = img.copy() 
+    v_2 = img.copy() * 0.5 
+    v_3 = img.copy() * 0.25 
+    alpha = 0.05 
+    
+    for i in range(iterations):
+        k_t = 0.01 * i  
+        x_3_prime = v_3 - k_t
+        h_x_t = 4.0 * (x_3_prime ** 2)
+        x_2_prime = v_2 - (alpha * h_x_t)
+        f_x_t = 3.0 * (x_2_prime ** 2) + 2.0 * x_3_prime
+        x_1_prime = v_1 - (alpha * f_x_t)
+        v_1, v_2, v_3 = x_1_prime, x_2_prime, x_3_prime
+
+    return np.clip(x_1_prime, 0, 1)
+
+inpo_filtered = proposed_INPO_filter(noisy)
+
+print("2. Generating Edge-Profile Plot...")
+# ==========================================
+# 4. Extract 1D Edge Profiles
+# ==========================================
+# Row 100 crosses the dark coat and the light background perfectly.
+row_idx = 100
+col_start = 80
+col_end = 180
+
+profile_clean = original[row_idx, col_start:col_end]
+profile_noisy = noisy[row_idx, col_start:col_end]
+profile_gaussian = gaussian_filtered[row_idx, col_start:col_end]
+profile_tv = tv_filtered[row_idx, col_start:col_end]
+profile_nlm = nlm_filtered[row_idx, col_start:col_end]
+profile_inpo = inpo_filtered[row_idx, col_start:col_end]
+profile_pm_bilateral = bilateral_filtered[row_idx, col_start:col_end] # PM stand-in
+
+# ==========================================
+# 5. Plotting with IEEE Styling
+# ==========================================
+plt.figure(figsize=(10, 5), dpi=300)
+plt.rcParams['font.family'] = 'serif'
+
+x_axis = np.arange(col_start, col_end)
+
+plt.plot(x_axis, profile_noisy, color='lightgray', alpha=0.8, label='Noisy Input')
+plt.plot(x_axis, profile_clean, color='black', linestyle='--', linewidth=2, label='Clean Reference')
+plt.plot(x_axis, profile_gaussian, color='blue', linewidth=1.5, alpha=0.7, label='Gaussian')
+plt.plot(x_axis, profile_pm_bilateral, color='purple', linewidth=1.5, alpha=0.7, label='Perona-Malik / Bilateral')
+plt.plot(x_axis, profile_tv, color='green', linewidth=1.5, alpha=0.7, label='Total Variation')
+plt.plot(x_axis, profile_nlm, color='orange', linewidth=1.5, alpha=0.7, label='Non-Local Means')
+plt.plot(x_axis, profile_inpo, color='red', linewidth=2.5, label='Proposed INPO')
+
+plt.title('Edge-Profile Comparison Across Structural Discontinuity', fontsize=14, weight='bold')
+plt.xlabel('Spatial Coordinate (Pixel Index)', fontsize=12)
+plt.ylabel('Pixel Intensity', fontsize=12)
+plt.legend(loc='lower right', fontsize=9, framealpha=0.9)
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.tight_layout()
+
+# ==========================================
+# 6. Save and Download
+# ==========================================
+fig7_name = "fig_7_edge_profile.png"
+plt.savefig(fig7_name, bbox_inches='tight')
+plt.show()
+
+print("3. Downloading Figure 7...")
+files.download(fig7_name)
